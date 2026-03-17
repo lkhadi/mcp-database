@@ -1,0 +1,46 @@
+{
+    "name": "db-access",
+    "version": "1.0.0",
+    "description": "MCP Server for MySQL and PostgreSQL database access with dynamic tool generation",
+    "type": "module",
+    "main": "dist/index.js",
+    "bin": {
+        "db-access": "dist/index.js"
+    },
+    "scripts": {
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "dev": "tsx src/index.ts",
+        "clean": "rimraf dist",
+        "prepublishOnly": "npm run build"
+    },
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "mysql",
+        "postgresql",
+        "database",
+        "ai",
+        "llm"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.0",
+        "@types/ssh2": "^1.15.5",
+        "mysql2": "^3.11.0",
+        "pg": "^8.13.0",
+        "ssh2": "^1.17.0",
+        "zod": "^3.23.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@types/pg": "^8.11.0",
+        "rimraf": "^6.0.0",
+        "tsx": "^4.0.0",
+        "typescript": "^5.6.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

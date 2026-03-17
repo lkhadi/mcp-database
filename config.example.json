@@ -1,0 +1,98 @@
+{
+    "connections": [
+        {
+            "id": "local_mysql",
+            "type": "mysql",
+            "host": "localhost",
+            "port": 3306,
+            "username": "root",
+            "password": "your_password_here",
+            "databases": "*"
+        },
+        {
+            "id": "production_via_ssh",
+            "type": "mysql",
+            "host": "127.0.0.1",
+            "port": 3306,
+            "username": "db_user",
+            "password": "db_password",
+            "databases": [
+                "production_db"
+            ],
+            "ssh": {
+                "enabled": true,
+                "lazy": false,
+                "host": "bastion.example.com",
+                "port": 22,
+                "username": "ssh_user",
+                "privateKey": "~/.ssh/id_rsa",
+                "targetHost": "internal-db.private",
+                "targetPort": 3306
+            }
+        },
+        {
+            "id": "staging_via_multihop",
+            "type": "postgresql",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "username": "postgres",
+            "password": "staging_password",
+            "databases": [
+                "staging_db"
+            ],
+            "ssh": {
+                "enabled": true,
+                "lazy": true,
+                "host": "final-jump.internal",
+                "port": 22,
+                "username": "deploy",
+                "privateKey": "~/.ssh/deploy_key",
+                "targetHost": "staging-db.internal",
+                "targetPort": 5432,
+                "jumpHosts": [
+                    {
+                        "host": "bastion.example.com",
+                        "port": 22,
+                        "username": "jump_user",
+                        "privateKey": "~/.ssh/bastion_key"
+                    }
+                ]
+            }
+        },
+        {
+            "id": "legacy_with_password",
+            "type": "mysql",
+            "host": "127.0.0.1",
+            "port": 3306,
+            "username": "legacy_user",
+            "password": "legacy_password",
+            "databases": [
+                "legacy_db"
+            ],
+            "ssh": {
+                "enabled": true,
+                "host": "old-server.example.com",
+                "port": 22,
+                "username": "admin",
+                "password": "ssh_password",
+                "targetHost": "localhost",
+                "targetPort": 3306
+            }
+        }
+    ],
+    "server": {
+        "name": "db-access",
+        "version": "1.0.0",
+        "resultRowLimit": 1000
+    },
+    "security": {
+        "blockDangerousQueries": true,
+        "dangerousPatterns": [
+            "DROP",
+            "TRUNCATE",
+            "ALTER",
+            "GRANT",
+            "REVOKE"
+        ]
+    }
+}
