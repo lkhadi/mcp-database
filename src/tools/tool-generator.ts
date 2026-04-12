@@ -88,8 +88,7 @@ function registerExecuteSqlTool(
             sql: z.string().describe('SQL query or multiple statements separated by semicolons'),
             database: z
                 .string()
-                .optional()
-                .describe('Database name. If omitted, uses the first available database for the connection.'),
+                .describe('Database name to execute the query against. Required.'),
         },
         async ({ connection, sql, database }) => {
             // Find the connection
@@ -106,8 +105,7 @@ function registerExecuteSqlTool(
                 };
             }
 
-            const defaultDb = conn.databases[0] ?? '';
-            const db = database ?? defaultDb;
+            const db = database;
             const dbList = conn.databases.join(', ');
 
             // Validate database exists
