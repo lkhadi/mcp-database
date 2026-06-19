@@ -3,6 +3,7 @@ import type { DatabaseAdapter, PoolOptions } from './types.js';
 import { MySQLAdapter } from './mysql-adapter.js';
 import { PostgreSQLAdapter } from './postgresql-adapter.js';
 import { SSHTunnelManager, TunnelInfo } from '../ssh/tunnel-manager.js';
+import { isTransientConnectionError } from './connection-retry.js';
 
 /**
  * Resolved database connection with adapter and available databases
@@ -33,6 +34,9 @@ interface LazyConnection {
 export class ConnectionManager {
     private connections: Map<string, ResolvedConnection> = new Map();
     private lazyConnections: Map<string, LazyConnection> = new Map();
+    private connectionConfigs: Map<string, DatabaseConfig> = new Map();
+    private activeAdapters: Map<string, DatabaseAdapter> = new Map();
+    private managedAdapters: Map<string, DatabaseAdapter> = new Map();
     private tunnelManager: SSHTunnelManager = new SSHTunnelManager();
 
     /**
@@ -40,6 +44,8 @@ export class ConnectionManager {
      */
     async initialize(configs: DatabaseConfig[]): Promise<void> {
         for (const config of configs) {
+            this.connectionConfigs.set(config.id, config);
+
             // Handle SSH tunnel if configured
             let tunnelInfo: TunnelInfo | null = null;
 
@@ -76,6 +82,7 @@ export class ConnectionManager {
      */
     private async initializeConnection(config: DatabaseConfig, tunnelInfo: TunnelInfo | null): Promise<void> {
         const adapter = this.createAdapter(config, tunnelInfo);
+        this.activeAdapters.set(config.id, adapter);
 
         // Resolve databases (discover if wildcard)
         let databases: string[];
@@ -100,7 +107,7 @@ export class ConnectionManager {
         this.connections.set(config.id, {
             id: config.id,
             type: config.type,
-            adapter,
+            adapter: this.createManagedAdapter(config.id, config.type),
             databases,
             tunnelInfo: tunnelInfo ?? undefined,
         });
@@ -176,7 +183,7 @@ export class ConnectionManager {
             resolved.push({
                 id: lazy.id,
                 type: lazy.type,
-                adapter: this.createLazyAdapter(lazy),
+                adapter: this.createManagedAdapter(lazy.id, lazy.type),
                 databases: lazy.databases,
                 isLazySSH: true,
             });
@@ -186,46 +193,122 @@ export class ConnectionManager {
     }
 
     /**
-     * Create a lazy adapter that connects on first use
+     * Create a manager-owned adapter proxy that can recover SSH-backed connections.
      */
-    private createLazyAdapter(lazy: LazyConnection): DatabaseAdapter {
-        const manager = this;
-        const lazyId = lazy.id;
+    private createManagedAdapter(id: string, type: 'mysql' | 'postgresql'): DatabaseAdapter {
+        const key = `${id}:${type}`;
+        const existing = this.managedAdapters.get(key);
+        if (existing) {
+            return existing;
+        }
 
-        // Create a proxy adapter that establishes connection on first use
-        const lazyAdapter: DatabaseAdapter = {
-            type: lazy.type,
+        const adapter: DatabaseAdapter = {
+            type,
 
-            async execute(sql: string, database?: string) {
-                const conn = await manager.getConnectionAsync(lazyId);
-                if (!conn) throw new Error(`Failed to establish lazy connection: ${lazyId}`);
-                return conn.adapter.execute(sql, database);
-            },
+            execute: (sql: string, database?: string) =>
+                this.withManagedAdapter(id, (activeAdapter) => activeAdapter.execute(sql, database)),
 
-            async listDatabases() {
-                const conn = await manager.getConnectionAsync(lazyId);
-                if (!conn) throw new Error(`Failed to establish lazy connection: ${lazyId}`);
-                return conn.adapter.listDatabases();
-            },
+            listDatabases: () =>
+                this.withManagedAdapter(id, (activeAdapter) => activeAdapter.listDatabases()),
 
-            async listTables(database: string) {
-                const conn = await manager.getConnectionAsync(lazyId);
-                if (!conn) throw new Error(`Failed to establish lazy connection: ${lazyId}`);
-                return conn.adapter.listTables(database);
-            },
+            listTables: (database: string) =>
+                this.withManagedAdapter(id, (activeAdapter) => activeAdapter.listTables(database)),
 
-            async describeTable(database: string, table: string) {
-                const conn = await manager.getConnectionAsync(lazyId);
-                if (!conn) throw new Error(`Failed to establish lazy connection: ${lazyId}`);
-                return conn.adapter.describeTable(database, table);
-            },
+            describeTable: (database: string, table: string) =>
+                this.withManagedAdapter(id, (activeAdapter) => activeAdapter.describeTable(database, table)),
 
-            async close() {
-                // Nothing to close for lazy adapter
-            },
+            close: () => this.closeActiveAdapter(id),
         };
 
-        return lazyAdapter;
+        this.managedAdapters.set(`${id}:${type}`, adapter);
+        return adapter;
+    }
+
+    private async withManagedAdapter<T>(
+        id: string,
+        operation: (adapter: DatabaseAdapter) => Promise<T>
+    ): Promise<T> {
+        await this.getConnectionAsync(id);
+
+        const adapter = this.activeAdapters.get(id);
+        if (!adapter) {
+            throw new Error(`Failed to establish connection: ${id}`);
+        }
+
+        try {
+            return await operation(adapter);
+        } catch (error) {
+            if (!this.shouldRecoverSshConnection(id, error)) {
+                throw error;
+            }
+
+            await this.recoverSshConnection(id);
+
+            const recoveredAdapter = this.activeAdapters.get(id);
+            if (!recoveredAdapter) {
+                throw new Error(`Failed to recover SSH connection: ${id}`);
+            }
+
+            return operation(recoveredAdapter);
+        }
+    }
+
+    private shouldRecoverSshConnection(id: string, error: unknown): boolean {
+        const config = this.connectionConfigs.get(id) ?? this.lazyConnections.get(id)?.config;
+        const resolved = this.connections.get(id);
+        return Boolean(config?.ssh?.enabled && resolved?.tunnelInfo && isTransientConnectionError(error));
+    }
+
+    private async recoverSshConnection(id: string): Promise<void> {
+        const config = this.connectionConfigs.get(id) ?? this.lazyConnections.get(id)?.config;
+        if (!config) {
+            throw new Error(`No configuration found for connection: ${id}`);
+        }
+
+        await this.closeActiveAdapter(id);
+
+        const tunnelInfo = await this.tunnelManager.reconnect(id);
+        const adapter = this.createAdapter(config, tunnelInfo);
+        this.activeAdapters.set(id, adapter);
+
+        const existingConnection = this.connections.get(id);
+        let databases = existingConnection?.databases;
+        if (!databases) {
+            if (config.databases === '*') {
+                try {
+                    databases = await adapter.listDatabases();
+                } catch (error) {
+                    await this.closeActiveAdapter(id);
+                    throw error;
+                }
+            } else {
+                databases = config.databases;
+            }
+        }
+
+        this.connections.set(id, {
+            id,
+            type: config.type,
+            adapter: this.createManagedAdapter(id, config.type),
+            databases,
+            tunnelInfo,
+        });
+        this.lazyConnections.delete(id);
+    }
+
+    private async closeActiveAdapter(id: string): Promise<void> {
+        const adapter = this.activeAdapters.get(id);
+        if (!adapter) {
+            return;
+        }
+
+        this.activeAdapters.delete(id);
+        try {
+            await adapter.close();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[${id}] Failed to close stale database adapter before reconnect: ${message}`);
+        }
     }
 
     /**
@@ -241,12 +324,13 @@ export class ConnectionManager {
     async closeAll(): Promise<void> {
         // Close database connections first
         console.error('Closing database connections...');
-        const closePromises = Array.from(this.connections.values()).map((conn) =>
-            conn.adapter.close()
-        );
+        const closePromises = Array.from(this.activeAdapters.values()).map((adapter) => adapter.close());
         await Promise.all(closePromises);
+        this.activeAdapters.clear();
+        this.managedAdapters.clear();
         this.connections.clear();
         this.lazyConnections.clear();
+        this.connectionConfigs.clear();
 
         // Then close SSH tunnels
         await this.tunnelManager.closeAll();
