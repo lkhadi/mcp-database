@@ -4,7 +4,7 @@ This file is a reference for AI coding agents working on the **MCP Database Acce
 
 ## Project Overview
 
-This project is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server written in TypeScript that exposes MySQL and PostgreSQL databases to MCP clients such as Claude Desktop and Cursor. It is published as the npm package `db-access`.
+This project is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server written in TypeScript that exposes MySQL and PostgreSQL databases to MCP clients such as Claude Desktop and Cursor. It is structured as the npm package `db-access` and is ready to be published, but it is not currently published to the npm registry.
 
 Key features:
 
