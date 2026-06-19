@@ -15,11 +15,14 @@ npm install
 # Build TypeScript
 npm run build
 
-# Run in development mode (auto-reloads)
+# Run in development mode
 npm run dev -- --config config.json
 
 # Run in production
 npm start -- --config config.json
+
+# Run tests
+npm test
 
 # Clean build artifacts
 npm run clean
@@ -31,9 +34,11 @@ The server follows a modular architecture:
 
 - **`src/index.ts`** - Main entry point. Initializes MCP server, loads config, creates connection manager, registers tools.
 - **`src/config/`** - Configuration loading and Zod schema validation (`schema.ts`, `loader.ts`)
-- **`src/db/`** - Database adapters and connection management
-  - `connection-manager.ts` - Manages database connections with SSH tunnel support (lazy connection support)
-  - `mysql-adapter.ts` / `postgresql-adapter.ts` - Database-specific implementations implementing `DatabaseAdapter` interface
+- **`src/db/`** - Database adapters, connection management, and retry logic
+  - `connection-manager.ts` - Manages database connections with SSH tunnel support, lazy connections, and SSH-backed recovery
+  - `mysql-adapter.ts` / `postgresql-adapter.ts` - Database-specific implementations of the `DatabaseAdapter` interface, with transient-error retry
+  - `connection-retry.ts` - Classifies transient connection errors and provides the `withConnectionRetry` helper
+  - `types.ts` - Shared adapter interfaces and types
 - **`src/ssh/`** - SSH tunnel management (`tunnel-manager.ts`) for connecting through jump hosts
 - **`src/tools/`** - MCP tool registration (`tool-generator.ts`) - registers 2 unified tools: `list_databases`, `execute_sql`
 - **`src/utils/`** - Query validation and output formatting
@@ -44,6 +49,8 @@ The server follows a modular architecture:
 - **Lazy SSH**: SSH tunnels can be configured with `lazy: true` to defer connection until first query.
 - **Adapter Pattern**: `DatabaseAdapter` interface abstracts MySQL/PostgreSQL differences.
 - **SSH Tunnel Manager**: Handles multihop jump hosts with automatic reconnection.
+- **Connection Resilience**: Adapters retry once on transient connection errors; SSH-backed connections trigger tunnel reconnection and adapter recreation on failure.
+- **Tests**: Unit/integration tests live in `tests/` and run with `node --test` via `npm test`.
 
 ## Configuration
 
