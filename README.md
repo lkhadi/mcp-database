@@ -10,6 +10,7 @@ A Model Context Protocol (MCP) server that provides secure access to **MySQL** a
 - 🛡️ **Query Safety** - Blocks dangerous queries (DROP, TRUNCATE, etc.) by default
 - 📊 **LLM-Friendly Output** - Formatted tables and results optimized for AI assistants
 - 🔐 **SSH Tunnel Support** - Connect through SSH gateways with multihop/jump host support
+- 🔄 **Connection Resilience** - Automatic retry and recovery for transient database and SSH tunnel failures
 
 ## Installation
 
@@ -233,6 +234,9 @@ npm run dev -- --config config.json
 # Build for production
 npm run build
 
+# Run tests
+npm test
+
 # Clean build artifacts
 npm run clean
 ```
@@ -246,4 +250,4 @@ npm run clean
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).
