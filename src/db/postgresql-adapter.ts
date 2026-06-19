@@ -1,5 +1,6 @@
 import pg from 'pg';
 import type { DatabaseAdapter, QueryResultData, ColumnInfo, PoolOptions } from './types.js';
+import { withConnectionRetry } from './connection-retry.js';
 
 const { Pool } = pg;
 
@@ -41,79 +42,113 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
         return pool;
     }
 
+    private async resetPool(database: string): Promise<void> {
+        const pool = this.pools.get(database);
+        if (!pool) {
+            return;
+        }
+
+        try {
+            await pool.end();
+        } catch {
+            // Ignore errors from ending an already-broken pool
+        } finally {
+            this.pools.delete(database);
+        }
+    }
+
     async execute(sql: string, database?: string): Promise<QueryResultData> {
         const db = database ?? this.options.database;
         if (!db) {
             throw new Error('No database specified');
         }
 
-        const pool = this.getPool(db);
-        const client = await pool.connect();
+        return withConnectionRetry(
+            async () => {
+                const pool = this.getPool(db);
+                const client = await pool.connect();
 
-        try {
-            // Set query timeout
-            await client.query(`SET statement_timeout = ${this.queryTimeout}`);
+                try {
+                    // Set query timeout
+                    await client.query(`SET statement_timeout = ${this.queryTimeout}`);
 
-            const result = await client.query(sql);
+                    const result = await client.query(sql);
 
-            // Handle non-SELECT queries
-            if (!result.rows || result.rows.length === 0) {
-                return {
-                    rows: [],
-                    rowCount: 0,
-                    fields: result.fields?.map((f) => f.name) ?? [],
-                    affectedRows: result.rowCount ?? 0,
-                };
-            }
+                    // Handle non-SELECT queries
+                    if (!result.rows || result.rows.length === 0) {
+                        return {
+                            rows: [],
+                            rowCount: 0,
+                            fields: result.fields?.map((f) => f.name) ?? [],
+                            affectedRows: result.rowCount ?? 0,
+                        };
+                    }
 
-            return {
-                rows: result.rows as Record<string, unknown>[],
-                rowCount: result.rows.length,
-                fields: result.fields.map((f) => f.name),
-            };
-        } finally {
-            client.release();
-        }
+                    return {
+                        rows: result.rows as Record<string, unknown>[],
+                        rowCount: result.rows.length,
+                        fields: result.fields.map((f) => f.name),
+                    };
+                } finally {
+                    client.release();
+                }
+            },
+            () => this.resetPool(db)
+        );
     }
 
     async listDatabases(): Promise<string[]> {
-        // Use a default connection to postgres database to list all databases
-        const pool = new Pool({
-            host: this.options.host,
-            port: this.options.port,
-            user: this.options.user,
-            password: this.options.password,
-            database: 'postgres',
-            max: 1,
-        });
+        return withConnectionRetry(
+            async () => {
+                // Use a default connection to postgres database to list all databases
+                const pool = new Pool({
+                    host: this.options.host,
+                    port: this.options.port,
+                    user: this.options.user,
+                    password: this.options.password,
+                    database: 'postgres',
+                    max: 1,
+                });
 
-        try {
-            const result = await pool.query(`
-        SELECT datname FROM pg_database 
-        WHERE datistemplate = false 
-        AND datname NOT IN ('postgres')
-        ORDER BY datname
-      `);
-            return result.rows.map((row) => row.datname as string);
-        } finally {
-            await pool.end();
-        }
+                try {
+                    const result = await pool.query(`
+            SELECT datname FROM pg_database 
+            WHERE datistemplate = false 
+            AND datname NOT IN ('postgres')
+            ORDER BY datname
+          `);
+                    return result.rows.map((row) => row.datname as string);
+                } finally {
+                    await pool.end();
+                }
+            },
+            async () => {
+                // listDatabases uses a temporary pool; nothing persistent to reset
+            }
+        );
     }
 
     async listTables(database: string): Promise<string[]> {
-        const pool = this.getPool(database);
-        const result = await pool.query(`
+        return withConnectionRetry(
+            async () => {
+                const pool = this.getPool(database);
+                const result = await pool.query(`
       SELECT tablename FROM pg_tables 
       WHERE schemaname = 'public'
       ORDER BY tablename
     `);
-        return result.rows.map((row) => row.tablename as string);
+                return result.rows.map((row) => row.tablename as string);
+            },
+            () => this.resetPool(database)
+        );
     }
 
     async describeTable(database: string, table: string): Promise<ColumnInfo[]> {
-        const pool = this.getPool(database);
-        const result = await pool.query(
-            `
+        return withConnectionRetry(
+            async () => {
+                const pool = this.getPool(database);
+                const result = await pool.query(
+                    `
       SELECT 
         c.column_name,
         c.data_type,
@@ -133,16 +168,19 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
         AND c.table_schema = 'public'
       ORDER BY c.ordinal_position
     `,
-            [table]
-        );
+                    [table]
+                );
 
-        return result.rows.map((row) => ({
-            name: row.column_name as string,
-            type: row.data_type as string,
-            nullable: row.is_nullable === 'YES',
-            defaultValue: row.column_default as string | null,
-            isPrimaryKey: row.is_primary_key as boolean,
-        }));
+                return result.rows.map((row) => ({
+                    name: row.column_name as string,
+                    type: row.data_type as string,
+                    nullable: row.is_nullable === 'YES',
+                    defaultValue: row.column_default as string | null,
+                    isPrimaryKey: row.is_primary_key as boolean,
+                }));
+            },
+            () => this.resetPool(database)
+        );
     }
 
     async close(): Promise<void> {

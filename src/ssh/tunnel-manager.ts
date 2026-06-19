@@ -90,6 +90,32 @@ export class SSHTunnelManager {
     }
 
     /**
+     * Recreate a tunnel and return its current local endpoint.
+     */
+    async reconnect(connectionId: string): Promise<TunnelInfo> {
+        const state = this.tunnels.get(connectionId);
+        if (!state) {
+            throw new Error(`No tunnel registered for connection: ${connectionId}`);
+        }
+
+        console.error(`[${connectionId}] Recreating SSH tunnel...`);
+        state.isReconnecting = true;
+        state.reconnectAttempts = 0;
+        if (state.info) {
+            state.info.isConnected = false;
+        }
+
+        await this.cleanupTunnel(state);
+        state.info = null;
+
+        try {
+            return await this.connect(connectionId);
+        } finally {
+            state.isReconnecting = false;
+        }
+    }
+
+    /**
      * Check if a connection has SSH tunnel configured
      */
     hasTunnel(connectionId: string): boolean {
