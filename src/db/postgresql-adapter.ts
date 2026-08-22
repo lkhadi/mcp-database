@@ -36,10 +36,23 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
                 connectionTimeoutMillis: this.options.connectTimeout ?? 30000,
                 idleTimeoutMillis: 30000,
             });
+            this.attachPoolErrorHandler(pool, database);
             this.pools.set(key, pool);
         }
 
         return pool;
+    }
+
+    /**
+     * pg emits 'error' on the pool when an *idle* client dies - a database
+     * restart, a network drop, an SSH tunnel torn down underneath it. With no
+     * listener attached Node turns that into an uncaught exception and the
+     * whole MCP server exits, which the client sees as a sudden disconnect.
+     */
+    private attachPoolErrorHandler(pool: pg.Pool, database: string): void {
+        pool.on('error', (error: Error) => {
+            console.error(`[postgresql:${database}] idle client error: ${error.message}`);
+        });
     }
 
     private async resetPool(database: string): Promise<void> {
@@ -109,6 +122,7 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
                     database: 'postgres',
                     max: 1,
                 });
+                this.attachPoolErrorHandler(pool, 'postgres');
 
                 try {
                     const result = await pool.query(`

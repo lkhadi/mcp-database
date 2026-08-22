@@ -7,9 +7,30 @@ import { ConnectionManager } from './db/connection-manager.js';
 import { registerAllTools } from './tools/tool-generator.js';
 
 /**
+ * Last-resort guards.
+ *
+ * The server talks JSON-RPC over stdio, so if the process exits the client sees
+ * the server disconnect mid-session and the user has to restart it by hand. A
+ * stray 'error' event or a rejected background promise is not worth that: log
+ * it and keep serving. The individual sources are handled at their origin - this
+ * only catches what slips past.
+ */
+function installProcessGuards(): void {
+    process.on('uncaughtException', (error) => {
+        console.error('Uncaught exception (server staying up):', error);
+    });
+
+    process.on('unhandledRejection', (reason) => {
+        console.error('Unhandled rejection (server staying up):', reason);
+    });
+}
+
+/**
  * Main entry point
  */
 async function main(): Promise<void> {
+    installProcessGuards();
+
     try {
         // Parse command line arguments
         const args = parseArgs(process.argv.slice(2));
