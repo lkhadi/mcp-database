@@ -46,35 +46,69 @@ export class ConnectionManager {
         for (const config of configs) {
             this.connectionConfigs.set(config.id, config);
 
-            // Handle SSH tunnel if configured
-            let tunnelInfo: TunnelInfo | null = null;
-
-            if (config.ssh?.enabled) {
-                tunnelInfo = await this.tunnelManager.register(config.id, config.ssh);
-
-                // If lazy SSH, register as lazy connection (tools will be generated but connection deferred)
-                if (config.ssh.lazy && !tunnelInfo) {
-                    console.error(`[${config.id}] SSH tunnel registered (lazy mode - will connect on first use)`);
-
-                    // Store as lazy connection with databases from config
-                    const databases = config.databases === '*' ? [] : config.databases;
-
-                    if (databases.length === 0 && config.databases === '*') {
-                        console.error(`[${config.id}] Warning: Cannot discover databases in lazy mode. Please specify database list explicitly.`);
-                    }
-
-                    this.lazyConnections.set(config.id, {
-                        id: config.id,
-                        type: config.type,
-                        config,
-                        databases,
-                    });
-                    continue;
-                }
+            try {
+                await this.initializeFromConfig(config);
+            } catch (error) {
+                this.registerUnreachableConnection(config, error);
             }
-
-            await this.initializeConnection(config, tunnelInfo);
         }
+    }
+
+    /**
+     * Establish a single connection from its configuration
+     */
+    private async initializeFromConfig(config: DatabaseConfig): Promise<void> {
+        // Handle SSH tunnel if configured
+        let tunnelInfo: TunnelInfo | null = null;
+
+        if (config.ssh?.enabled) {
+            tunnelInfo = await this.tunnelManager.register(config.id, config.ssh);
+
+            // If lazy SSH, register as lazy connection (tools will be generated but connection deferred)
+            if (config.ssh.lazy && !tunnelInfo) {
+                console.error(`[${config.id}] SSH tunnel registered (lazy mode - will connect on first use)`);
+
+                // Store as lazy connection with databases from config
+                const databases = config.databases === '*' ? [] : config.databases;
+
+                if (databases.length === 0 && config.databases === '*') {
+                    console.error(`[${config.id}] Warning: Cannot discover databases in lazy mode. Please specify database list explicitly.`);
+                }
+
+                this.lazyConnections.set(config.id, {
+                    id: config.id,
+                    type: config.type,
+                    config,
+                    databases,
+                });
+                return;
+            }
+        }
+
+        await this.initializeConnection(config, tunnelInfo);
+    }
+
+    /**
+     * Keep a connection that is unreachable at startup out of the fatal path.
+     * One database being down must not take the whole MCP server with it; the
+     * connection is registered and re-established on first use instead.
+     */
+    private registerUnreachableConnection(config: DatabaseConfig, error: unknown): void {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[${config.id}] Unreachable at startup, will retry on first use: ${message}`);
+
+        if (config.databases === '*') {
+            console.error(
+                `[${config.id}] Warning: databases is "*" and discovery failed, so no databases can be listed for it. Configure an explicit database list to keep this connection usable while the server is down.`
+            );
+        }
+
+        this.connections.set(config.id, {
+            id: config.id,
+            type: config.type,
+            adapter: this.createManagedAdapter(config.id, config.type),
+            databases: config.databases === '*' ? [] : config.databases,
+        });
     }
 
     /**
@@ -82,7 +116,6 @@ export class ConnectionManager {
      */
     private async initializeConnection(config: DatabaseConfig, tunnelInfo: TunnelInfo | null): Promise<void> {
         const adapter = this.createAdapter(config, tunnelInfo);
-        this.activeAdapters.set(config.id, adapter);
 
         // Resolve databases (discover if wildcard)
         let databases: string[];
@@ -94,6 +127,7 @@ export class ConnectionManager {
                 );
             } catch (error) {
                 console.error(`[${config.id}] Failed to discover databases:`, error);
+                await this.closeAdapter(config.id, adapter);
                 throw error;
             }
         } else {
@@ -104,6 +138,11 @@ export class ConnectionManager {
             console.error(`[${config.id}] Warning: No databases found for connection`);
         }
 
+        // Publish the live adapter and the resolved connection together. Leaving
+        // a connection registered without its adapter makes it permanently
+        // unusable, and only a server restart can clear that.
+        await this.closeActiveAdapter(config.id);
+        this.activeAdapters.set(config.id, adapter);
         this.connections.set(config.id, {
             id: config.id,
             type: config.type,
@@ -111,6 +150,7 @@ export class ConnectionManager {
             databases,
             tunnelInfo: tunnelInfo ?? undefined,
         });
+        this.lazyConnections.delete(config.id);
     }
 
     /**
@@ -146,23 +186,32 @@ export class ConnectionManager {
      * For lazy SSH connections, this will trigger tunnel establishment
      */
     async getConnectionAsync(id: string): Promise<ResolvedConnection | undefined> {
-        // Check if connection is already established
+        // `connections` records what is configured and listable, `activeAdapters`
+        // records what is actually live. A failed recovery leaves the first
+        // without the second, so reconcile them here rather than assuming a
+        // listed connection is a working one.
         const existing = this.connections.get(id);
-        if (existing) {
+        if (existing && this.activeAdapters.has(id)) {
             return existing;
         }
 
-        // Check if this is a pending lazy connection
-        const lazy = this.lazyConnections.get(id);
-        if (lazy) {
-            console.error(`[${id}] Establishing lazy SSH tunnel...`);
-            const tunnelInfo = await this.tunnelManager.ensureConnected(id);
-            await this.initializeConnection(lazy.config, tunnelInfo);
-            this.lazyConnections.delete(id); // Remove from lazy, now it's active
-            return this.connections.get(id);
+        const config = this.lazyConnections.get(id)?.config ?? this.connectionConfigs.get(id);
+        if (!config) {
+            return existing;
         }
 
-        return undefined;
+        if (this.lazyConnections.has(id)) {
+            console.error(`[${id}] Establishing lazy SSH tunnel...`);
+        } else if (existing) {
+            console.error(`[${id}] Connection has no live adapter, re-establishing...`);
+        }
+
+        const tunnelInfo = config.ssh?.enabled
+            ? await this.tunnelManager.ensureConnected(id)
+            : null;
+
+        await this.initializeConnection(config, tunnelInfo);
+        return this.connections.get(id);
     }
 
     /**
@@ -267,33 +316,16 @@ export class ConnectionManager {
 
         await this.closeActiveAdapter(id);
 
+        // Reuse databases we already resolved so recovery does not pay for
+        // another discovery round trip over a freshly rebuilt tunnel.
+        const knownDatabases = this.connections.get(id)?.databases;
+        const recoveryConfig: DatabaseConfig =
+            config.databases === '*' && knownDatabases && knownDatabases.length > 0
+                ? { ...config, databases: knownDatabases }
+                : config;
+
         const tunnelInfo = await this.tunnelManager.reconnect(id);
-        const adapter = this.createAdapter(config, tunnelInfo);
-        this.activeAdapters.set(id, adapter);
-
-        const existingConnection = this.connections.get(id);
-        let databases = existingConnection?.databases;
-        if (!databases) {
-            if (config.databases === '*') {
-                try {
-                    databases = await adapter.listDatabases();
-                } catch (error) {
-                    await this.closeActiveAdapter(id);
-                    throw error;
-                }
-            } else {
-                databases = config.databases;
-            }
-        }
-
-        this.connections.set(id, {
-            id,
-            type: config.type,
-            adapter: this.createManagedAdapter(id, config.type),
-            databases,
-            tunnelInfo,
-        });
-        this.lazyConnections.delete(id);
+        await this.initializeConnection(recoveryConfig, tunnelInfo);
     }
 
     private async closeActiveAdapter(id: string): Promise<void> {
@@ -303,11 +335,18 @@ export class ConnectionManager {
         }
 
         this.activeAdapters.delete(id);
+        await this.closeAdapter(id, adapter);
+    }
+
+    /**
+     * Close an adapter without letting cleanup failures mask the original error.
+     */
+    private async closeAdapter(id: string, adapter: DatabaseAdapter): Promise<void> {
         try {
             await adapter.close();
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            console.error(`[${id}] Failed to close stale database adapter before reconnect: ${message}`);
+            console.error(`[${id}] Failed to close stale database adapter: ${message}`);
         }
     }
 

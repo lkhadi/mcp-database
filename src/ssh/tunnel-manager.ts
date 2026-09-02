@@ -246,12 +246,23 @@ export class SSHTunnelManager {
                 ...this.getAuthConfig(hostConfig),
             };
 
+            let settled = false;
+
             client.on('ready', () => {
+                settled = true;
                 resolvePromise(client);
             });
 
             client.on('error', (err: Error) => {
-                reject(new Error(`SSH connection to ${hostConfig.host} failed: ${err.message}`));
+                if (!settled) {
+                    settled = true;
+                    reject(new Error(`SSH connection to ${hostConfig.host} failed: ${err.message}`));
+                    return;
+                }
+
+                // The listener has to stay attached for the client's whole life:
+                // an 'error' event with no listener terminates the process.
+                console.error(`[ssh] ${hostConfig.host} errored after connect: ${err.message}`);
             });
 
             if (previousClient && previousHostConfig) {
@@ -323,36 +334,75 @@ export class SSHTunnelManager {
     ): Promise<{ server: Server; localPort: number }> {
         return new Promise((resolvePromise, reject) => {
             const server = createServer((socket: Socket) => {
-                client.forwardOut(
-                    '127.0.0.1',
-                    socket.localPort ?? 0,
-                    targetHost,
-                    targetPort,
-                    (err: Error | undefined, stream: ClientChannel) => {
-                        if (err) {
-                            console.error(`Forward error: ${err.message}`);
-                            socket.end();
-                            return;
-                        }
-                        socket.pipe(stream).pipe(socket);
-                    }
-                );
+                this.forwardSocket(client, socket, targetHost, targetPort);
             });
 
+            let isListening = false;
+
             server.on('error', (err: Error) => {
-                reject(new Error(`Failed to create forwarding server: ${err.message}`));
+                if (!isListening) {
+                    reject(new Error(`Failed to create forwarding server: ${err.message}`));
+                    return;
+                }
+
+                console.error(`Forwarding server error: ${err.message}`);
             });
 
             // Listen on random available port
             server.listen(0, '127.0.0.1', () => {
                 const address = server.address();
                 if (typeof address === 'object' && address !== null) {
+                    isListening = true;
                     resolvePromise({ server, localPort: address.port });
                 } else {
                     reject(new Error('Failed to get local server address'));
                 }
             });
         });
+    }
+
+    /**
+     * Pipe one local connection through the SSH tunnel.
+     *
+     * Both ends need their own 'error' listener. When a tunnel drops
+     * mid-transfer these emit ECONNRESET/EPIPE, and `pipe()` does not forward
+     * errors, so an unhandled 'error' event would take the whole server down
+     * and the MCP client would see the server disconnect.
+     */
+    private forwardSocket(
+        client: Client,
+        socket: Socket,
+        targetHost: string,
+        targetPort: number
+    ): void {
+        socket.on('error', (err: Error) => {
+            console.error(`Local forwarding socket error: ${err.message}`);
+            socket.destroy();
+        });
+
+        client.forwardOut(
+            '127.0.0.1',
+            socket.localPort ?? 0,
+            targetHost,
+            targetPort,
+            (err: Error | undefined, stream: ClientChannel) => {
+                if (err) {
+                    console.error(`Forward error: ${err.message}`);
+                    socket.end();
+                    return;
+                }
+
+                stream.on('error', (streamError: Error) => {
+                    console.error(`Tunnel channel error: ${streamError.message}`);
+                    socket.destroy();
+                });
+
+                socket.once('close', () => stream.destroy());
+                stream.once('close', () => socket.destroy());
+
+                socket.pipe(stream).pipe(socket);
+            }
+        );
     }
 
     /**
@@ -366,19 +416,21 @@ export class SSHTunnelManager {
         const finalClient = state.clients[state.clients.length - 1];
         if (!finalClient) return;
 
-        finalClient.on('close', () => {
+        const onDisconnected = () => {
             if (state.info) {
                 state.info.isConnected = false;
             }
-            this.handleDisconnect(connectionId);
-        });
 
-        finalClient.on('end', () => {
-            if (state.info) {
-                state.info.isConnected = false;
-            }
-            this.handleDisconnect(connectionId);
-        });
+            // Detached from any await chain, so an unhandled rejection here
+            // would terminate the process instead of failing one reconnect.
+            void this.handleDisconnect(connectionId).catch((error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error(`[${connectionId}] Reconnect handler failed: ${message}`);
+            });
+        };
+
+        finalClient.on('close', onDisconnected);
+        finalClient.on('end', onDisconnected);
     }
 
     /**
