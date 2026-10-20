@@ -1,3 +1,6 @@
+import type { DatabaseType } from '../db/types.js';
+import { sqlCodeVariants } from './sql-lexer.js';
+
 /**
  * Query validation result
  */
@@ -31,13 +34,17 @@ export class QueryValidator {
     /**
      * Validate a SQL query
      */
-    validate(sql: string): ValidationResult {
+    validate(sql: string, dialect: DatabaseType = 'mysql'): ValidationResult {
         if (!this.enabled) {
             return { valid: true };
         }
 
-        // Remove comments and string literals for safer matching
-        const cleanedSql = this.removeStringsAndComments(sql);
+        let cleanedSql: string;
+        try {
+            cleanedSql = sqlCodeVariants(sql, dialect).join('\n');
+        } catch (error) {
+            return { valid: false, reason: error instanceof Error ? error.message : String(error) };
+        }
 
         for (const pattern of this.dangerousPatterns) {
             if (pattern.test(cleanedSql)) {
@@ -55,23 +62,4 @@ export class QueryValidator {
         return { valid: true };
     }
 
-    /**
-     * Remove string literals and comments from SQL for pattern matching
-     * This prevents false positives from matching keywords inside strings
-     */
-    private removeStringsAndComments(sql: string): string {
-        // Remove single-line comments
-        let result = sql.replace(/--.*$/gm, '');
-
-        // Remove multi-line comments
-        result = result.replace(/\/\*[\s\S]*?\*\//g, '');
-
-        // Remove single-quoted strings (replace with placeholder to maintain structure)
-        result = result.replace(/'(?:[^'\\]|\\.)*'/g, "''");
-
-        // Remove double-quoted strings
-        result = result.replace(/"(?:[^"\\]|\\.)*"/g, '""');
-
-        return result;
-    }
 }

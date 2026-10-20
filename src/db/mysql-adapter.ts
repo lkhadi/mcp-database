@@ -1,7 +1,8 @@
 import mysql from 'mysql2/promise';
 import type { Pool, RowDataPacket, FieldPacket } from 'mysql2/promise';
 import type { DatabaseAdapter, QueryResultData, ColumnInfo, PoolOptions } from './types.js';
-import { withConnectionRetry } from './connection-retry.js';
+import { withConnectionRetry, isTransientConnectionError, QueryOutcomeUnknownError } from './connection-retry.js';
+import { assertSingleStatement } from '../utils/sql-lexer.js';
 
 /**
  * MySQL database adapter
@@ -58,6 +59,7 @@ export class MySQLAdapter implements DatabaseAdapter {
     }
 
     async execute(sql: string, database?: string): Promise<QueryResultData> {
+        assertSingleStatement(sql, this.type);
         const db = database ?? this.options.database;
         if (!db) {
             throw new Error('No database specified');
@@ -68,11 +70,17 @@ export class MySQLAdapter implements DatabaseAdapter {
                 const pool = this.getPool(db);
                 const connection = await pool.getConnection();
 
+                let submitted = false;
                 try {
                     // Set query timeout
                     await connection.query(`SET SESSION MAX_EXECUTION_TIME = ${this.queryTimeout}`);
 
+                    submitted = true;
                     const [rows, fields] = await connection.query<RowDataPacket[]>(sql);
+
+                    if (Array.isArray(rows) && (rows.some(Array.isArray) || fields?.some((field) => !field || Array.isArray(field)))) {
+                        throw new Error('SQL executed but returned unsupported multiple result sets. Do not automatically retry.');
+                    }
 
                     // Handle non-SELECT queries
                     if (!Array.isArray(rows)) {
@@ -92,6 +100,9 @@ export class MySQLAdapter implements DatabaseAdapter {
                         rowCount: rows.length,
                         fields: fieldNames,
                     };
+                } catch (error) {
+                    if (submitted && isTransientConnectionError(error)) throw new QueryOutcomeUnknownError(error);
+                    throw error;
                 } finally {
                     connection.release();
                 }

@@ -2,11 +2,40 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ConnectionManager } from '../src/db/connection-manager.js';
+import { QueryOutcomeUnknownError } from '../src/db/connection-retry.js';
 import type { DatabaseConfig } from '../src/config/schema.js';
 import type { DatabaseAdapter, QueryResultData } from '../src/db/types.js';
 import type { TunnelInfo } from '../src/ssh/tunnel-manager.js';
 
 type AdapterFactory = (config: DatabaseConfig, tunnelInfo: TunnelInfo | null) => DatabaseAdapter;
+
+for (const recoveryFails of [false, true]) {
+    test(`never replays an unknown query outcome across SSH recovery (recovery fails: ${recoveryFails})`, async () => {
+        const manager = new ConnectionManager();
+        const tunnelManager = new StubTunnelManager(tunnelInfo(3307), tunnelInfo(3308));
+        if (recoveryFails) tunnelManager.reconnect = async () => { throw new Error('SSH unavailable'); };
+        const unknown = new QueryOutcomeUnknownError(transientError());
+        let executions = 0;
+        installTestDoubles(manager, tunnelManager, () => ({
+            type: 'mysql',
+            async execute() { executions++; if (executions === 1) throw unknown; return resultForPort(3308); },
+            async listDatabases() { return ['app']; },
+            async listTables() { return []; },
+            async describeTable() { return []; },
+            async close() {},
+        }));
+        await manager.initialize([lazySshConfig()]);
+        const adapter = manager.getAllConnections()[0].adapter;
+        await assert.rejects(() => adapter.execute('UPDATE counters SET value = value + 1', 'app'), (error) => error === unknown);
+        assert.equal(executions, 1);
+        if (!recoveryFails) {
+            assert.equal(tunnelManager.reconnectCalls, 1);
+            await adapter.execute('SELECT 1', 'app');
+            assert.equal(executions, 2);
+        }
+        await manager.closeAll();
+    });
+}
 
 function lazySshConfig(): DatabaseConfig {
     return {

@@ -24,6 +24,14 @@ const TRANSIENT_ERROR_CODES = new Set([
     'PROTOCOL_SEQUENCE_TIMEOUT',
 ]);
 
+/** SQL may have committed before its response was lost. Never replay it. */
+export class QueryOutcomeUnknownError extends Error {
+    constructor(cause: unknown) {
+        super('Connection lost after SQL submission; query outcome is unknown. SQL was not retried. Check the database before retrying.', { cause });
+        this.name = 'QueryOutcomeUnknownError';
+    }
+}
+
 interface ErrorWithConnectionCode {
     code?: unknown;
     errno?: unknown;
@@ -32,6 +40,7 @@ interface ErrorWithConnectionCode {
 }
 
 export function isTransientConnectionError(error: unknown): boolean {
+    if (error instanceof QueryOutcomeUnknownError) return true;
     if (!error || typeof error !== 'object') {
         return false;
     }
@@ -76,19 +85,18 @@ export async function withConnectionRetry<T>(
     operation: () => Promise<T>,
     resetConnection: () => Promise<void>
 ): Promise<T> {
-    try {
-        return await operation();
-    } catch (error) {
-        if (!isTransientConnectionError(error)) {
-            throw error;
-        }
-
+    for (let attempt = 0; ; attempt++) {
         try {
-            await resetConnection();
-        } catch {
-            // The stale pool has already been discarded by the adapter; retry with a fresh one.
-        }
+            return await operation();
+        } catch (error) {
+            if (!isTransientConnectionError(error)) throw error;
 
-        return operation();
+            try {
+                await resetConnection();
+            } catch {
+                // Cleanup must not mask the original failure or unknown outcome.
+            }
+            if (error instanceof QueryOutcomeUnknownError || attempt === 1) throw error;
+        }
     }
 }

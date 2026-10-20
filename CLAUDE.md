@@ -8,6 +8,8 @@ MCP Database Access Server - A Model Context Protocol (MCP) server that provides
 
 ## Commands
 
+Use Node.js 22 or newer for development and tests. The test suite uses the newer mock-timer API; the declared server runtime minimum remains Node.js 18.
+
 ```bash
 # Install dependencies
 npm install
@@ -46,10 +48,11 @@ The server follows a modular architecture:
 ## Key Design Patterns
 
 - **Unified Tools**: Regardless of how many connections configured, only 2 tools are registered (`list_databases`, `execute_sql`). Connection ID is passed as a parameter.
-- **Lazy SSH**: SSH tunnels can be configured with `lazy: true` to defer connection until first query.
+- **Lazy SSH**: `lazy: true` defers connection until the first query or unresolved wildcard discovery through `list_databases`.
 - **Adapter Pattern**: `DatabaseAdapter` interface abstracts MySQL/PostgreSQL differences.
 - **SSH Tunnel Manager**: Handles multihop jump hosts with automatic reconnection.
-- **Connection Resilience**: Adapters retry once on transient connection errors; SSH-backed connections trigger tunnel reconnection and adapter recreation on failure.
+- **Connection Resilience**: Retry transient acquisition/setup failures, but never replay user SQL after submission; report unknown outcomes and recover for later calls. Concurrent requests share initialization/recovery. SSH automatic reconnect uses five cancellable exponential-backoff attempts.
+- **SQL Contract**: `execute_sql` requires a database and exactly one statement. Dialect-aware validation rejects batches independently of dangerous-keyword policy.
 - **Tests**: Unit/integration tests live in `tests/` and run with `node --test` via `npm test`.
 
 ## Configuration
