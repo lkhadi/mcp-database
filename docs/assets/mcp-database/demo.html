@@ -1,0 +1,179 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP Database — recorded local demo</title><style>
+:root { color-scheme: light; --ink:#193049; --paper:#fff; --ground:#edf2f7;
+  --accent:#315e9e; --muted:#5b6b7d; --rule:#d6e0e9; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--ground); color:var(--ink);
+  font-family:"Avenir Next",Avenir,"Segoe UI",sans-serif; }
+main { display:grid; gap:32px; padding:32px; }
+.capture { width:1600px; min-height:1000px; padding:46px 58px 30px; background:var(--paper);
+  display:flex; flex-direction:column; gap:26px; }
+.brandbar { display:flex; align-items:center; justify-content:space-between; gap:24px;
+  border-bottom:1px solid var(--rule); padding-bottom:21px; font-size:18px; }
+.brand { display:flex; align-items:baseline; gap:20px; }
+.brand strong { font-size:24px; font-weight:700; letter-spacing:-.5px; }
+.brand span { color:var(--muted); }
+.env { font-size:14px; letter-spacing:.11em; font-weight:650; color:var(--accent); }
+.title { display:grid; gap:9px; }
+h1 { font-size:43px; line-height:1.18; letter-spacing:-1.3px; font-weight:650; margin:0; }
+.subtitle { margin:0; color:var(--muted); font-size:19px; line-height:1.5; }
+.body-grid { display:grid; grid-template-columns:354px minmax(0,1fr); gap:38px; flex:1; }
+aside { padding-right:31px; border-right:1px solid var(--rule); display:flex; flex-direction:column; gap:22px; }
+.eyebrow { font-size:13px; letter-spacing:.12em; font-weight:700; color:var(--muted); margin:0 0 10px; }
+.prompt { font-size:22px; line-height:1.48; margin:0; letter-spacing:-.18px; }
+.scope { margin:0; display:grid; gap:12px; border-top:1px solid var(--rule); padding-top:20px; }
+.scope div { display:grid; gap:2px; }
+dt { font-size:14px; color:var(--muted); }
+dd { margin:0; font-family:Menlo,Consolas,monospace; font-size:16px; font-weight:500; }
+.tool { display:inline-block; font-family:Menlo,Consolas,monospace; font-size:14px;
+  padding:6px 9px; background:var(--ground); color:var(--accent); border:1px solid var(--rule); }
+.output { min-width:0; display:flex; flex-direction:column; gap:20px; }
+.output-title { display:flex; justify-content:space-between; align-items:center; gap:20px; }
+h2 { font-size:24px; font-weight:650; margin:0; }
+.hint { font-size:15px; color:var(--muted); }
+code,pre { font-family:Menlo,Consolas,monospace; }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; line-height:1.55; margin:0;
+  padding:15px 18px; background:var(--ground); border:1px solid var(--rule); }
+.discovery { font-size:14px; padding:13px; }
+.table-wrap { max-width:100%; overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+th { background:var(--ground); color:var(--muted); font-weight:600; font-size:15px; text-align:left; padding:15px 13px; }
+td { border-bottom:1px solid var(--rule); padding:17px 13px; font-size:17px; }
+.schema-table td { font-family:Menlo,Consolas,monospace; font-size:15px; }
+.schema-table th:first-child { width:20%; }
+.schema-table th:nth-child(2) { width:34%; }
+.schema-table th:nth-child(3) { width:12%; }
+.schema-table td:first-child { font-weight:650; color:var(--accent); }
+.schema-table td:nth-child(2) { white-space:nowrap; }
+.keys { display:grid; gap:12px; padding-top:4px; }
+.key-row { display:grid; grid-template-columns:130px 1fr; gap:16px; align-items:center; }
+.key-type { color:var(--muted); font-size:13px; font-weight:700; letter-spacing:.045em; }
+.key-row code { font-size:15px; line-height:1.5; }
+.evidence { display:flex; gap:24px; align-items:center; font-size:15px; color:var(--muted);
+  border-top:1px solid var(--rule); padding-top:16px; margin-top:auto; }
+.evidence strong { color:var(--ink); font-weight:650; }
+footer { display:flex; justify-content:space-between; gap:24px; border-top:1px solid var(--rule);
+  padding-top:18px; color:var(--muted); font-size:13px; line-height:1.5; }
+footer span:last-child { text-align:right; }
+.metrics { display:grid; grid-template-columns:1fr 1.4fr; gap:24px; padding:2px 0 8px; }
+.metric { display:grid; gap:2px; }
+.metric .value { font-size:40px; line-height:1.1; font-weight:650; letter-spacing:-1px; font-variant-numeric:tabular-nums; }
+.metric .label { color:var(--muted); font-size:15px; }
+.report-table td { padding:14px 13px; font-size:20px; }
+.report-table td:nth-child(n+2),.report-table th:nth-child(n+2) { text-align:right; }
+.report-table td:first-child { font-family:Menlo,Consolas,monospace; font-size:18px; }
+.note { margin:0; color:var(--muted); font-size:16px; line-height:1.5; }
+.query { font-size:15px; }
+.guide { background:var(--paper); padding:44px; width:min(100%,1100px); display:grid; gap:20px; line-height:1.7; }
+.guide h1 { font-size:34px; }
+.guide h2 { font-size:22px; margin-top:8px; }
+.guide p,.guide ul { margin:0; max-width:75ch; }
+.guide a { color:var(--accent); }
+.guide a:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+.guide ul { padding-left:24px; }
+@media (max-width:900px) {
+  main { padding:16px; gap:20px; }
+  .capture { width:100%; min-height:auto; padding:25px 22px; }
+  .brandbar,.brand,.output-title { align-items:flex-start; flex-direction:column; gap:8px; }
+  h1 { font-size:32px; } .subtitle { font-size:17px; }
+  .body-grid { grid-template-columns:1fr; gap:26px; }
+  aside { border-right:0; padding-right:0; padding-bottom:22px; border-bottom:1px solid var(--rule); }
+  .prompt { font-size:20px; } .scope { grid-template-columns:1fr 1fr; }
+  .key-row { grid-template-columns:1fr; gap:5px; }
+  .key-row code { overflow-wrap:anywhere; }
+  footer { flex-direction:column; gap:6px; } footer span:last-child { text-align:left; }
+  .schema-table { min-width:760px; } .report-table { min-width:390px; }
+  .metrics { gap:16px; } .metric .value { font-size:32px; }
+  .guide { padding:25px 22px; }
+}
+</style></head>
+<body><main><section class="capture" id="schema">
+<div class="brandbar"><div class="brand"><strong>mcp-database</strong>
+    <span>Companion skill demonstration</span></div><span class="env">LOCAL DEMO / POSTGRESQL</span></div>
+    <div class="title"><h1>Inspect the schema before writing SQL.</h1><p class="subtitle">Discover the target database, then inspect columns and relationships.</p></div>
+<div class="body-grid"><aside><div><p class="eyebrow">Example request</p><p class="prompt">List the available databases, then inspect public.orders in the sales database on demo_postgres. Show its columns, defaults, primary key, and foreign keys. Do not modify data.</p></div>
+<dl class="scope">
+<div><dt>Connection</dt><dd>demo_postgres</dd></div>
+<div><dt>Database</dt><dd>sales</dd></div>
+<div><dt>Table</dt><dd>public.orders</dd></div>
+<div><dt>Database role</dt><dd>demo_reader</dd></div>
+</dl><div><p class="eyebrow">Discovery response</p><pre class="discovery">Available database connections:
+
+[demo_postgres] (postgresql)
+  - sales</pre></div></aside>
+<div class="output"><div class="output-title"><h2>public.orders</h2><span class="hint">6 columns · 2 key constraints</span></div>
+<div class="table-wrap"><table class="schema-table"><thead><tr><th>Column</th><th>Type</th><th>Nullable</th><th>Default</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>NO</td><td>None</td></tr><tr><td>customer_id</td><td>bigint</td><td>NO</td><td>None</td></tr><tr><td>total_amount</td><td>numeric(12,2)</td><td>NO</td><td>0</td></tr><tr><td>currency</td><td>character(3)</td><td>NO</td><td>&#x27;USD&#x27;::bpchar</td></tr><tr><td>status</td><td>text</td><td>NO</td><td>&#x27;pending&#x27;::text</td></tr><tr><td>created_at</td><td>timestamp with time zone</td><td>NO</td><td>now()</td></tr></tbody></table></div><div class="keys"><p class="eyebrow">Keys returned by PostgreSQL</p><div class="key-row"><span class="key-type">PRIMARY KEY</span><code>PRIMARY KEY (id)</code></div><div class="key-row"><span class="key-type">FOREIGN KEY</span><code>FOREIGN KEY (customer_id) REFERENCES customers(id)</code></div></div>
+<div class="evidence"><span><strong>Read-only role</strong> verified</span><span><strong>Schema only</strong> · no row data retrieved</span></div>
+</div></div><footer><span>Recorded MCP tool run · isolated local PostgreSQL · fictional records</span>
+<span>Tool responses reformatted for readability · not a third-party agent interface</span></footer></section><section class="capture" id="report">
+<div class="brandbar"><div class="brand"><strong>mcp-database</strong>
+    <span>Companion skill demonstration</span></div><span class="env">LOCAL DEMO / POSTGRESQL</span></div>
+    <div class="title"><h1>Turn an SQL request into a checked report.</h1><p class="subtitle">Group order counts and values by status, then verify the totals independently.</p></div>
+<div class="body-grid"><aside><div><p class="eyebrow">Example request</p><p class="prompt">Using sales.public.orders on demo_postgres, count USD orders by status and show their total order value. Include every status and verify the overall totals. Use read-only queries.</p></div>
+<dl class="scope">
+<div><dt>Connection</dt><dd>demo_postgres</dd></div>
+<div><dt>Database</dt><dd>sales</dd></div>
+<div><dt>Table</dt><dd>public.orders</dd></div>
+<div><dt>Database role</dt><dd>demo_reader</dd></div>
+</dl><p class="note">The table structure was inspected before this report query ran.</p>
+<div><p class="eyebrow">Tools used</p><span class="tool">list_databases</span> <span class="tool">execute_sql</span></div></aside>
+<div class="output"><div class="metrics">
+<div class="metric"><span class="value">20</span><span class="label">USD orders · all statuses</span></div>
+<div class="metric"><span class="value">$2,060.00</span><span class="label">Total order value · USD</span></div></div>
+<div class="table-wrap"><table class="report-table"><thead><tr><th>Status</th><th>Orders</th><th>Order value (USD)</th></tr></thead><tbody><tr><td>paid</td><td>10</td><td>1050.00</td></tr><tr><td>shipped</td><td>5</td><td>675.00</td></tr><tr><td>pending</td><td>3</td><td>205.00</td></tr><tr><td>cancelled</td><td>2</td><td>130.00</td></tr></tbody></table></div><p class="note">Includes cancelled orders. Amounts represent order value, not recognized revenue.</p>
+<div><p class="eyebrow">Executed SQL</p><pre class="query">SELECT status, COUNT(*) AS orders,
+       SUM(total_amount)::numeric(12,2) AS total_usd
+FROM public.orders
+WHERE currency = &#x27;USD&#x27;
+GROUP BY status
+ORDER BY orders DESC, status</pre></div>
+<div class="evidence"><span><strong>Totals matched</strong> a separate SQL check</span><span><strong>No writes</strong> in the recorded workflow</span></div>
+</div></div><footer><span>Recorded MCP tool run · isolated local PostgreSQL · fictional records</span>
+<span>Tool responses reformatted for readability · not a third-party agent interface</span></footer></section><article class="guide" id="guide">
+<h1>MCP Database Companion Skill</h1>
+<p>This guide explains the companion skill, its separate server dependency, and the recorded demos.
+The skill provides instructions for an AI agent; the mcp-database server provides the database tools.</p>
+<h2>What the skill does</h2>
+<ul><li>Discover configured MySQL and PostgreSQL databases.</li>
+<li>Inspect schemas, columns, keys, and relationships before writing SQL.</li>
+<li>Produce SQL reports with explicit connection and database targets.</li>
+<li>Guide authorized data corrections through previews and result checks.</li>
+<li>Handle uncertain query outcomes without blindly replaying submitted SQL.</li></ul>
+<h2>What you need</h2>
+<p>An agent that can load the skill and call a configured local MCP server; a compatible, locally built
+mcp-database checkout; Node.js 18+ and npm; and your own database access. SSH access is needed only
+when your connection uses a tunnel. Specific agent integrations have not all been tested.</p>
+<p>The server setup is documented in the <a href="https://github.com/lkhadi/mcp-database">server repository</a>.
+The skill ZIP includes <code>references/setup.md</code> with build-verification guidance.
+Do not assume the package name <code>db-access</code> is an npm-published installer.</p>
+<h2>Load and use the skill</h2>
+<p>Use your agent or marketplace's supported skill-loading mechanism. Skill delivery does not install
+the server or configure database credentials. Keep credentials in your local server configuration.</p>
+<p>Once the MCP tools are available, ask the agent to discover databases and specify the connection,
+database, schema, and table you want to inspect. For reporting, state the filters and totals you need.
+Authorize data changes separately and use a database account with privileges appropriate to the task.</p>
+<h2>Tools and limits</h2>
+<p>The server exposes <code>list_databases</code> and <code>execute_sql</code>. Every SQL call requires
+a connection, database, and exactly one statement. Pooled calls do not share a guaranteed database
+session, so do not split transactions or depend on temporary tables across calls.</p>
+<p>Keyword blocking does not enforce read-only access; use database privileges for that. Displayed
+results may be truncated. A connection failure after submission can leave the outcome unknown;
+reconcile the database state rather than assuming rollback or retrying blindly.</p>
+<p>Verify a server build that enforces single-statement calls and avoids automatic replay after
+submission. Older server builds may behave differently. A successful connectivity check alone
+does not establish these guarantees.</p>
+<h2>About these demo images</h2>
+<p>These images present actual responses captured through the MCP SDK from the locally built server
+and an isolated PostgreSQL 18.3 database. Six fictional customers and twenty fictional orders were
+seeded before the demonstration. The recorded workflow used a SELECT-only role, with read-only
+transactions enabled. The images are formatted transcript reports, not screenshots of a third-party
+agent app or an end-to-end marketplace installation.</p>
+<p>The accompanying <code>mcp-demo-transcript.json</code> contains the executed calls and original
+responses. <code>demo-fixture.sql</code> contains the fictional data. The local database was stopped
+after capture. The examples demonstrate PostgreSQL; they do not constitute a live MySQL test.</p>
+<h2>License</h2>
+<p>The companion skill is distributed under MIT. Commercial sale, use, modification, and redistribution
+are permitted under the included license. Preserve its copyright and permission notices.
+Any marketplace delivery and account terms also apply to use of that marketplace.</p>
+</article></main></body></html>

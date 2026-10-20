@@ -61,6 +61,8 @@ Key features:
 
 ## Build and Test Commands
 
+Use Node.js 22 or newer for development and tests. The test suite uses the newer mock-timer API; the declared server runtime minimum remains Node.js 18.
+
 Install dependencies:
 
 ```bash
@@ -164,11 +166,11 @@ The `DatabaseAdapter` interface (`src/db/types.ts`) abstracts database-specific 
 
 ### Connection Retry and Recovery
 
-`src/db/connection-retry.ts` classifies errors as transient by error code (e.g., `ECONNRESET`, `ECONNREFUSED`, PostgreSQL class `08`, MySQL protocol errors) or by message text. The `withConnectionRetry` helper retries once after resetting the affected connection pool. SSH-backed adapters further trigger SSH tunnel reconnection and adapter recreation when a transient error is detected.
+`src/db/connection-retry.ts` classifies transient connection errors and retries acquisition/setup failures once after resetting the affected pool. After user SQL is submitted, transient failures become `QueryOutcomeUnknownError`: pools and SSH connections recover for later use, but the SQL is never automatically replayed. Concurrent initialization and recovery share one operation per connection.
 
 ### Query Validation
 
-`QueryValidator` (`src/utils/query-validator.ts`) strips SQL comments and string literals, then checks for configured dangerous keywords. When `blockDangerousQueries` is true (the default), queries matching `dangerousPatterns` are rejected before execution.
+`QueryValidator` uses the dialect-aware scanner in `src/utils/sql-lexer.ts` to distinguish code, comments, strings, and identifiers before checking dangerous keywords. The MCP tool and both adapters require exactly one SQL statement independently of dangerous-keyword policy. Executable MySQL comments and ambiguous quoting are rejected. This lexical guard is not a full parser or a database privilege boundary.
 
 ### Output Formatting
 

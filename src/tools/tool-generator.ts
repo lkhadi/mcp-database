@@ -1,10 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type {
-  ConnectionManager,
-  ResolvedConnection,
-} from "../db/connection-manager.js";
+import type { ConnectionManager } from "../db/connection-manager.js";
 import type { SecurityConfig, ServerOptions } from "../config/schema.js";
 import { QueryValidator } from "../utils/query-validator.js";
+import { assertSingleStatement } from '../utils/sql-lexer.js';
 import {
   formatQueryResult,
   formatDatabaseList,
@@ -27,10 +25,10 @@ export function registerAllTools(
   );
 
   // Register unified tools (2 tools total, regardless of connection count)
-  registerListDatabasesTool(server, connections);
+  registerListDatabasesTool(server, connectionManager);
   registerExecuteSqlTool(
     server,
-    connections,
+    connectionManager,
     validator,
     serverOptions.resultRowLimit
   );
@@ -45,15 +43,25 @@ export function registerAllTools(
  */
 function registerListDatabasesTool(
   server: McpServer,
-  connections: ResolvedConnection[]
+  connectionManager: ConnectionManager
 ): void {
   server.tool(
     "list_databases",
     "List all available database connections and their databases",
     {},
     async () => {
+      const errors: string[] = [];
+      for (const connection of connectionManager.getAllConnections()) {
+        if (connection.databases.length > 0) continue;
+        try {
+          await connectionManager.getConnectionAsync(connection.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          errors.push(`[${connection.id}] Discovery unavailable: ${message}`);
+        }
+      }
       const formatted = formatDatabaseList(
-        connections.map((c) => ({
+        connectionManager.getAllConnections().map((c) => ({
           id: c.id,
           type: c.type,
           databases: c.databases,
@@ -61,7 +69,7 @@ function registerListDatabasesTool(
       );
 
       return {
-        content: [{ type: "text", text: formatted }],
+        content: [{ type: "text", text: [formatted, ...errors].join('\n') }],
       };
     }
   );
@@ -72,11 +80,11 @@ function registerListDatabasesTool(
  */
 function registerExecuteSqlTool(
     server: McpServer,
-    connections: ResolvedConnection[],
+    connectionManager: ConnectionManager,
     validator: QueryValidator,
     maxRows: number
 ): void {
-    const connectionIds = connections.map((c) => c.id);
+    const connectionIds = connectionManager.getAllConnections().map((c) => c.id);
 
     server.tool(
         'execute_sql',
@@ -85,14 +93,14 @@ function registerExecuteSqlTool(
             connection: z
                 .string()
                 .describe(`Connection ID. Available: ${connectionIds.join(', ')}`),
-            sql: z.string().describe('SQL query or multiple statements separated by semicolons'),
+            sql: z.string().describe('Exactly one SQL statement per call; batches are not supported'),
             database: z
                 .string()
                 .describe('Database name to execute the query against. Required.'),
         },
         async ({ connection, sql, database }) => {
             // Find the connection
-            const conn = connections.find((c) => c.id === connection);
+            const conn = connectionManager.getAllConnections().find((c) => c.id === connection);
             if (!conn) {
                 return {
                     content: [
@@ -109,7 +117,7 @@ function registerExecuteSqlTool(
             const dbList = conn.databases.join(', ');
 
             // Validate database exists
-            if (!conn.databases.includes(db)) {
+            if (conn.databases.length > 0 && !conn.databases.includes(db)) {
                 return {
                     content: [
                         {
@@ -122,7 +130,7 @@ function registerExecuteSqlTool(
             }
 
             // Validate query safety
-            const validation = validator.validate(sql);
+            const validation = validator.validate(sql, conn.type);
             if (!validation.valid) {
                 return {
                     content: [{ type: 'text', text: `Error: ${validation.reason}` }],
@@ -131,7 +139,15 @@ function registerExecuteSqlTool(
             }
 
             try {
-                const result = await conn.adapter.execute(sql, db);
+                assertSingleStatement(sql, conn.type);
+                const current = await connectionManager.getConnectionAsync(connection);
+                if (!current || !current.databases.includes(db)) {
+                    return {
+                        content: [{ type: 'text', text: `Error: Database "${db}" not found in connection "${connection}". Available: ${current?.databases.join(', ') ?? ''}` }],
+                        isError: true,
+                    };
+                }
+                const result = await current.adapter.execute(sql, db);
                 const formatted = formatQueryResult(result, maxRows);
 
                 return {
@@ -147,4 +163,3 @@ function registerExecuteSqlTool(
         }
     );
 }
-

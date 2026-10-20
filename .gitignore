@@ -17,3 +17,6 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Separately distributed companion skill package
+/skills/mcp-database/

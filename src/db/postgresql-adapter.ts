@@ -1,6 +1,7 @@
 import pg from 'pg';
 import type { DatabaseAdapter, QueryResultData, ColumnInfo, PoolOptions } from './types.js';
-import { withConnectionRetry } from './connection-retry.js';
+import { withConnectionRetry, isTransientConnectionError, QueryOutcomeUnknownError } from './connection-retry.js';
+import { assertSingleStatement } from '../utils/sql-lexer.js';
 
 const { Pool } = pg;
 
@@ -71,6 +72,7 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
     }
 
     async execute(sql: string, database?: string): Promise<QueryResultData> {
+        assertSingleStatement(sql, this.type);
         const db = database ?? this.options.database;
         if (!db) {
             throw new Error('No database specified');
@@ -81,11 +83,17 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
                 const pool = this.getPool(db);
                 const client = await pool.connect();
 
+                let submitted = false;
                 try {
                     // Set query timeout
                     await client.query(`SET statement_timeout = ${this.queryTimeout}`);
 
+                    submitted = true;
                     const result = await client.query(sql);
+
+                    if (Array.isArray(result)) {
+                        throw new Error('SQL executed but returned unsupported multiple result sets. Do not automatically retry.');
+                    }
 
                     // Handle non-SELECT queries
                     if (!result.rows || result.rows.length === 0) {
@@ -102,6 +110,9 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
                         rowCount: result.rows.length,
                         fields: result.fields.map((f) => f.name),
                     };
+                } catch (error) {
+                    if (submitted && isTransientConnectionError(error)) throw new QueryOutcomeUnknownError(error);
+                    throw error;
                 } finally {
                     client.release();
                 }

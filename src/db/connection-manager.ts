@@ -3,7 +3,7 @@ import type { DatabaseAdapter, PoolOptions } from './types.js';
 import { MySQLAdapter } from './mysql-adapter.js';
 import { PostgreSQLAdapter } from './postgresql-adapter.js';
 import { SSHTunnelManager, TunnelInfo } from '../ssh/tunnel-manager.js';
-import { isTransientConnectionError } from './connection-retry.js';
+import { isTransientConnectionError, QueryOutcomeUnknownError } from './connection-retry.js';
 
 /**
  * Resolved database connection with adapter and available databases
@@ -38,17 +38,25 @@ export class ConnectionManager {
     private activeAdapters: Map<string, DatabaseAdapter> = new Map();
     private managedAdapters: Map<string, DatabaseAdapter> = new Map();
     private tunnelManager: SSHTunnelManager = new SSHTunnelManager();
+    private connectionOperations = new Map<string, Promise<ResolvedConnection | undefined>>();
+    private closed = false;
 
     /**
      * Initialize connections from configuration
      */
     async initialize(configs: DatabaseConfig[]): Promise<void> {
+        if (this.closed) throw new Error('Connection manager is closed');
         for (const config of configs) {
+            if (this.closed) throw new Error('Connection manager is closed');
             this.connectionConfigs.set(config.id, config);
 
             try {
-                await this.initializeFromConfig(config);
+                await this.runConnectionOperation(config.id, async () => {
+                    await this.initializeFromConfig(config);
+                    return this.connections.get(config.id);
+                });
             } catch (error) {
+                if (this.closed) throw error;
                 this.registerUnreachableConnection(config, error);
             }
         }
@@ -63,6 +71,7 @@ export class ConnectionManager {
 
         if (config.ssh?.enabled) {
             tunnelInfo = await this.tunnelManager.register(config.id, config.ssh);
+            if (this.closed) throw new Error('Connection manager is closed');
 
             // If lazy SSH, register as lazy connection (tools will be generated but connection deferred)
             if (config.ssh.lazy && !tunnelInfo) {
@@ -72,7 +81,7 @@ export class ConnectionManager {
                 const databases = config.databases === '*' ? [] : config.databases;
 
                 if (databases.length === 0 && config.databases === '*') {
-                    console.error(`[${config.id}] Warning: Cannot discover databases in lazy mode. Please specify database list explicitly.`);
+                    console.error(`[${config.id}] Database discovery deferred until first tool use.`);
                 }
 
                 this.lazyConnections.set(config.id, {
@@ -99,7 +108,7 @@ export class ConnectionManager {
 
         if (config.databases === '*') {
             console.error(
-                `[${config.id}] Warning: databases is "*" and discovery failed, so no databases can be listed for it. Configure an explicit database list to keep this connection usable while the server is down.`
+                `[${config.id}] Database discovery will be retried on the next tool use.`
             );
         }
 
@@ -115,6 +124,7 @@ export class ConnectionManager {
      * Initialize a single connection with optional tunnel info
      */
     private async initializeConnection(config: DatabaseConfig, tunnelInfo: TunnelInfo | null): Promise<void> {
+        if (this.closed) throw new Error('Connection manager is closed');
         const adapter = this.createAdapter(config, tunnelInfo);
 
         // Resolve databases (discover if wildcard)
@@ -142,6 +152,10 @@ export class ConnectionManager {
         // a connection registered without its adapter makes it permanently
         // unusable, and only a server restart can clear that.
         await this.closeActiveAdapter(config.id);
+        if (this.closed) {
+            await this.closeAdapter(config.id, adapter);
+            throw new Error('Connection manager is closed');
+        }
         this.activeAdapters.set(config.id, adapter);
         this.connections.set(config.id, {
             id: config.id,
@@ -186,6 +200,9 @@ export class ConnectionManager {
      * For lazy SSH connections, this will trigger tunnel establishment
      */
     async getConnectionAsync(id: string): Promise<ResolvedConnection | undefined> {
+        if (this.closed) throw new Error('Connection manager is closed');
+        const pending = this.connectionOperations.get(id);
+        if (pending) return pending;
         // `connections` records what is configured and listable, `activeAdapters`
         // records what is actually live. A failed recovery leaves the first
         // without the second, so reconcile them here rather than assuming a
@@ -206,12 +223,28 @@ export class ConnectionManager {
             console.error(`[${id}] Connection has no live adapter, re-establishing...`);
         }
 
-        const tunnelInfo = config.ssh?.enabled
-            ? await this.tunnelManager.ensureConnected(id)
-            : null;
+        return this.runConnectionOperation(id, async () => {
+            const tunnelInfo = config.ssh?.enabled
+                ? await this.tunnelManager.ensureConnected(id)
+                : null;
+            await this.initializeConnection(config, tunnelInfo);
+            return this.connections.get(id);
+        });
+    }
 
-        await this.initializeConnection(config, tunnelInfo);
-        return this.connections.get(id);
+    private async runConnectionOperation(
+        id: string,
+        operation: () => Promise<ResolvedConnection | undefined>
+    ): Promise<ResolvedConnection | undefined> {
+        const existing = this.connectionOperations.get(id);
+        if (existing) return existing;
+        const pending = operation();
+        this.connectionOperations.set(id, pending);
+        try {
+            return await pending;
+        } finally {
+            if (this.connectionOperations.get(id) === pending) this.connectionOperations.delete(id);
+        }
     }
 
     /**
@@ -291,7 +324,17 @@ export class ConnectionManager {
                 throw error;
             }
 
-            await this.recoverSshConnection(id);
+            if (error instanceof QueryOutcomeUnknownError) {
+                try {
+                    await this.recoverSshConnection(id, adapter);
+                } catch (recoveryError) {
+                    const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+                    console.error(`[${id}] Recovery after unknown query outcome failed: ${message}`);
+                }
+                throw error;
+            }
+
+            await this.recoverSshConnection(id, adapter);
 
             const recoveredAdapter = this.activeAdapters.get(id);
             if (!recoveredAdapter) {
@@ -308,24 +351,32 @@ export class ConnectionManager {
         return Boolean(config?.ssh?.enabled && resolved?.tunnelInfo && isTransientConnectionError(error));
     }
 
-    private async recoverSshConnection(id: string): Promise<void> {
-        const config = this.connectionConfigs.get(id) ?? this.lazyConnections.get(id)?.config;
-        if (!config) {
-            throw new Error(`No configuration found for connection: ${id}`);
-        }
+    private async recoverSshConnection(id: string, failedAdapter: DatabaseAdapter): Promise<void> {
+        if (this.closed) throw new Error('Connection manager is closed');
+        const pending = this.connectionOperations.get(id);
+        if (pending) { await pending; return; }
+        const current = this.activeAdapters.get(id);
+        if (current && current !== failedAdapter) return;
+        await this.runConnectionOperation(id, async () => {
+            const config = this.connectionConfigs.get(id) ?? this.lazyConnections.get(id)?.config;
+            if (!config) {
+                throw new Error(`No configuration found for connection: ${id}`);
+            }
 
-        await this.closeActiveAdapter(id);
+            await this.closeActiveAdapter(id);
 
-        // Reuse databases we already resolved so recovery does not pay for
-        // another discovery round trip over a freshly rebuilt tunnel.
-        const knownDatabases = this.connections.get(id)?.databases;
-        const recoveryConfig: DatabaseConfig =
-            config.databases === '*' && knownDatabases && knownDatabases.length > 0
-                ? { ...config, databases: knownDatabases }
-                : config;
+            // Reuse databases we already resolved so recovery does not pay for
+            // another discovery round trip over a freshly rebuilt tunnel.
+            const knownDatabases = this.connections.get(id)?.databases;
+            const recoveryConfig: DatabaseConfig =
+                config.databases === '*' && knownDatabases && knownDatabases.length > 0
+                    ? { ...config, databases: knownDatabases }
+                    : config;
 
-        const tunnelInfo = await this.tunnelManager.reconnect(id);
-        await this.initializeConnection(recoveryConfig, tunnelInfo);
+            const tunnelInfo = await this.tunnelManager.reconnect(id);
+            await this.initializeConnection(recoveryConfig, tunnelInfo);
+            return this.connections.get(id);
+        });
     }
 
     private async closeActiveAdapter(id: string): Promise<void> {
@@ -361,18 +412,22 @@ export class ConnectionManager {
      * Close all connections and tunnels
      */
     async closeAll(): Promise<void> {
-        // Close database connections first
+        this.closed = true;
         console.error('Closing database connections...');
-        const closePromises = Array.from(this.activeAdapters.values()).map((adapter) => adapter.close());
-        await Promise.all(closePromises);
+        // Closing tunnels also cancels pending SSH handshakes. Wait for late
+        // initialization to dispose its resources before clearing bookkeeping.
+        const closePromises = Array.from(this.activeAdapters.entries()).map(([id, adapter]) => this.closeAdapter(id, adapter));
         this.activeAdapters.clear();
+        await Promise.allSettled([
+            ...closePromises,
+            ...this.connectionOperations.values(),
+            this.tunnelManager.closeAll(),
+        ]);
+        this.connectionOperations.clear();
         this.managedAdapters.clear();
         this.connections.clear();
         this.lazyConnections.clear();
         this.connectionConfigs.clear();
-
-        // Then close SSH tunnels
-        await this.tunnelManager.closeAll();
 
         console.error('Shutdown complete');
     }

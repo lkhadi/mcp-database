@@ -1,0 +1,35 @@
+FIELD 1 — REQUEST
+List the available databases, then inspect public.orders in the sales database on demo_postgres. Show its columns, defaults, primary key, and foreign keys. Do not modify data.
+
+FIELD 2 — RESULT
+Recorded local MCP demonstration using fictional data. Actual server responses are summarized below.
+
+Connection: demo_postgres (PostgreSQL)
+Database: sales
+Table: public.orders
+
+The discovery tool returned demo_postgres and its sales database. A separate SQL check confirmed
+access as demo_reader with read-only transactions enabled.
+
+## Columns
+| Column | Type | Nullable | Default |
+| --- | --- | --- | --- |
+| id | bigint | NO | None |
+| customer_id | bigint | NO | None |
+| total_amount | numeric(12,2) | NO | 0 |
+| currency | character(3) | NO | 'USD'::bpchar |
+| status | text | NO | 'pending'::text |
+| created_at | timestamp with time zone | NO | now() |
+
+## Keys
+| Constraint | Type | Definition |
+| --- | --- | --- |
+| orders_pkey | PRIMARY KEY | PRIMARY KEY (id) |
+| orders_customer_id_fkey | FOREIGN KEY | FOREIGN KEY (customer_id) REFERENCES customers(id) |
+
+The schema inspection used read-only metadata queries. No business rows were retrieved during
+schema inspection, and no data was modified. The results show six columns, a primary key on id,
+and a foreign key from customer_id to customers(id).
+
+This is a local scripted MCP demonstration, not an end-to-end marketplace installation.
+Possible next step: request an order-count report grouped by status with explicit currency filters.

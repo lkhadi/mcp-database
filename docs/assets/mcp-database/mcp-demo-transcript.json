@@ -1,0 +1,283 @@
+{
+  "provenance": "Actual MCP tool calls to a locally built mcp-database server and isolated PostgreSQL 18.3 instance. All database records are fictional. This is a scripted MCP demonstration, not a capture of a third-party agent UI.",
+  "recordedAt": "2026-10-20T07:11:07.605Z",
+  "connection": "demo_postgres",
+  "database": "sales",
+  "calls": [
+    {
+      "id": "discovery",
+      "name": "list_databases",
+      "arguments": {},
+      "startedAt": "2026-10-20T07:11:07.799Z",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Available database connections:\n\n[demo_postgres] (postgresql)\n  - sales\n"
+          }
+        ]
+      },
+      "text": "Available database connections:\n\n[demo_postgres] (postgresql)\n  - sales\n"
+    },
+    {
+      "id": "connection-check",
+      "name": "execute_sql",
+      "arguments": {
+        "connection": "demo_postgres",
+        "database": "sales",
+        "sql": "SELECT current_database() AS database, current_user AS role, current_setting('transaction_read_only') AS read_only"
+      },
+      "startedAt": "2026-10-20T07:11:07.802Z",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "database | role        | read_only\n---------+-------------+----------\nsales    | demo_reader | on       \n\nRows: 1"
+          }
+        ]
+      },
+      "text": "database | role        | read_only\n---------+-------------+----------\nsales    | demo_reader | on       \n\nRows: 1"
+    },
+    {
+      "id": "columns",
+      "name": "execute_sql",
+      "arguments": {
+        "connection": "demo_postgres",
+        "database": "sales",
+        "sql": "SELECT a.attname AS column,\n       pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,\n       CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS nullable,\n       COALESCE(pg_get_expr(d.adbin, d.adrelid), 'None') AS default\nFROM pg_attribute a\nJOIN pg_class t ON t.oid = a.attrelid\nJOIN pg_namespace n ON n.oid = t.relnamespace\nLEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum\nWHERE n.nspname = 'public' AND t.relname = 'orders'\n  AND a.attnum > 0 AND NOT a.attisdropped\nORDER BY a.attnum"
+      },
+      "startedAt": "2026-10-20T07:11:07.813Z",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "column       | type                     | nullable | default        \n-------------+--------------------------+----------+----------------\nid           | bigint                   | NO       | None           \ncustomer_id  | bigint                   | NO       | None           \ntotal_amount | numeric(12,2)            | NO       | 0              \ncurrency     | character(3)             | NO       | 'USD'::bpchar  \nstatus       | text                     | NO       | 'pending'::text\ncreated_at   | timestamp with time zone | NO       | now()          \n\nRows: 6"
+          }
+        ]
+      },
+      "text": "column       | type                     | nullable | default        \n-------------+--------------------------+----------+----------------\nid           | bigint                   | NO       | None           \ncustomer_id  | bigint                   | NO       | None           \ntotal_amount | numeric(12,2)            | NO       | 0              \ncurrency     | character(3)             | NO       | 'USD'::bpchar  \nstatus       | text                     | NO       | 'pending'::text\ncreated_at   | timestamp with time zone | NO       | now()          \n\nRows: 6"
+    },
+    {
+      "id": "keys",
+      "name": "execute_sql",
+      "arguments": {
+        "connection": "demo_postgres",
+        "database": "sales",
+        "sql": "SELECT c.conname AS constraint,\n       CASE c.contype WHEN 'p' THEN 'PRIMARY KEY' WHEN 'f' THEN 'FOREIGN KEY' END AS type,\n       pg_get_constraintdef(c.oid) AS definition\nFROM pg_constraint c\nJOIN pg_class t ON t.oid = c.conrelid\nJOIN pg_namespace n ON n.oid = t.relnamespace\nWHERE n.nspname = 'public' AND t.relname = 'orders'\n  AND c.contype IN ('p', 'f')\nORDER BY c.contype DESC"
+      },
+      "startedAt": "2026-10-20T07:11:07.816Z",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "constraint              | type        | definition                                        \n------------------------+-------------+---------------------------------------------------\norders_pkey             | PRIMARY KEY | PRIMARY KEY (id)                                  \norders_customer_id_fkey | FOREIGN KEY | FOREIGN KEY (customer_id) REFERENCES customers(id)\n\nRows: 2"
+          }
+        ]
+      },
+      "text": "constraint              | type        | definition                                        \n------------------------+-------------+---------------------------------------------------\norders_pkey             | PRIMARY KEY | PRIMARY KEY (id)                                  \norders_customer_id_fkey | FOREIGN KEY | FOREIGN KEY (customer_id) REFERENCES customers(id)\n\nRows: 2"
+    },
+    {
+      "id": "order-summary",
+      "name": "execute_sql",
+      "arguments": {
+        "connection": "demo_postgres",
+        "database": "sales",
+        "sql": "SELECT status, COUNT(*) AS orders,\n       SUM(total_amount)::numeric(12,2) AS total_usd\nFROM public.orders\nWHERE currency = 'USD'\nGROUP BY status\nORDER BY orders DESC, status"
+      },
+      "startedAt": "2026-10-20T07:11:07.817Z",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "status    | orders | total_usd\n----------+--------+----------\npaid      | 10     | 1050.00  \nshipped   | 5      | 675.00   \npending   | 3      | 205.00   \ncancelled | 2      | 130.00   \n\nRows: 4"
+          }
+        ]
+      },
+      "text": "status    | orders | total_usd\n----------+--------+----------\npaid      | 10     | 1050.00  \nshipped   | 5      | 675.00   \npending   | 3      | 205.00   \ncancelled | 2      | 130.00   \n\nRows: 4"
+    },
+    {
+      "id": "report-check",
+      "name": "execute_sql",
+      "arguments": {
+        "connection": "demo_postgres",
+        "database": "sales",
+        "sql": "SELECT COUNT(*) AS orders, SUM(total_amount)::numeric(12,2) AS total_usd FROM public.orders WHERE currency = 'USD'"
+      },
+      "startedAt": "2026-10-20T07:11:07.819Z",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "orders | total_usd\n-------+----------\n20     | 2060.00  \n\nRows: 1"
+          }
+        ]
+      },
+      "text": "orders | total_usd\n-------+----------\n20     | 2060.00  \n\nRows: 1"
+    },
+    {
+      "id": "read-only-check",
+      "name": "execute_sql",
+      "arguments": {
+        "connection": "demo_postgres",
+        "database": "sales",
+        "sql": "SELECT current_setting('transaction_read_only') AS read_only"
+      },
+      "startedAt": "2026-10-20T07:11:07.820Z",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "read_only\n---------\non       \n\nRows: 1"
+          }
+        ]
+      },
+      "text": "read_only\n---------\non       \n\nRows: 1"
+    }
+  ],
+  "server": {
+    "name": "mcp-database-local-demo",
+    "version": "1.0.0"
+  },
+  "tools": [
+    {
+      "name": "list_databases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "execute_sql",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string",
+            "description": "Connection ID. Available: demo_postgres"
+          },
+          "sql": {
+            "type": "string",
+            "description": "Exactly one SQL statement per call; batches are not supported"
+          },
+          "database": {
+            "type": "string",
+            "description": "Database name to execute the query against. Required."
+          }
+        },
+        "required": [
+          "connection",
+          "sql",
+          "database"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    }
+  ],
+  "views": {
+    "identity": {
+      "database": "sales",
+      "role": "demo_reader",
+      "read_only": "on"
+    },
+    "schema": {
+      "headings": [
+        "column",
+        "type",
+        "nullable",
+        "default"
+      ],
+      "rows": [
+        {
+          "column": "id",
+          "type": "bigint",
+          "nullable": "NO",
+          "default": "None"
+        },
+        {
+          "column": "customer_id",
+          "type": "bigint",
+          "nullable": "NO",
+          "default": "None"
+        },
+        {
+          "column": "total_amount",
+          "type": "numeric(12,2)",
+          "nullable": "NO",
+          "default": "0"
+        },
+        {
+          "column": "currency",
+          "type": "character(3)",
+          "nullable": "NO",
+          "default": "'USD'::bpchar"
+        },
+        {
+          "column": "status",
+          "type": "text",
+          "nullable": "NO",
+          "default": "'pending'::text"
+        },
+        {
+          "column": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": "NO",
+          "default": "now()"
+        }
+      ]
+    },
+    "keys": {
+      "headings": [
+        "constraint",
+        "type",
+        "definition"
+      ],
+      "rows": [
+        {
+          "constraint": "orders_pkey",
+          "type": "PRIMARY KEY",
+          "definition": "PRIMARY KEY (id)"
+        },
+        {
+          "constraint": "orders_customer_id_fkey",
+          "type": "FOREIGN KEY",
+          "definition": "FOREIGN KEY (customer_id) REFERENCES customers(id)"
+        }
+      ]
+    },
+    "summary": {
+      "headings": [
+        "status",
+        "orders",
+        "total_usd"
+      ],
+      "rows": [
+        {
+          "status": "paid",
+          "orders": "10",
+          "total_usd": "1050.00"
+        },
+        {
+          "status": "shipped",
+          "orders": "5",
+          "total_usd": "675.00"
+        },
+        {
+          "status": "pending",
+          "orders": "3",
+          "total_usd": "205.00"
+        },
+        {
+          "status": "cancelled",
+          "orders": "2",
+          "total_usd": "130.00"
+        }
+      ]
+    },
+    "totals": {
+      "orders": "20",
+      "total_usd": "2060.00"
+    }
+  }
+}
